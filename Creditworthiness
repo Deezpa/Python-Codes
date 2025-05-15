@@ -1,0 +1,112 @@
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from xgboost import XGBClassifier
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
+import warnings
+warnings.filterwarnings("ignore")
+
+# Load dataset
+df = pd.read_csv("500Credit_Score_Dataset.csv")
+df.drop(columns=["Profile_ID"], inplace=True)
+
+# Synthesize binary target
+def synthesize_target(row):
+    bad_payment = row["Utility_Payment_History"] == "Inconsistent" or                   row["Rent_Payment_History"] == "Inconsistent" or                   row["Telecommunications_Payment_History"] == "Inconsistent"
+    short_tenure = row["Bank_Account_Tenure"] < 12
+    young_and_unemployed = row["Age"] < 25 and row["Employment_Status"] == "Unemployed"
+    low_social = row["Social_Media_Footprint"] == "Low"
+
+    if bad_payment and (short_tenure or low_social or young_and_unemployed):
+        return 0
+    return 1
+
+df["Creditworthy"] = df.apply(synthesize_target, axis=1)
+X = df.drop(columns=["Creditworthy"])
+y = df["Creditworthy"]
+
+# Column types
+categorical_cols = X.select_dtypes(include=["object"]).columns.tolist()
+numerical_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
+
+# Preprocessing
+numeric_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("onehot", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", numeric_transformer, numerical_cols),
+        ("cat", categorical_transformer, categorical_cols)
+    ]
+)
+
+
+# Split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+
+# Train classical models
+models = {
+    "LogisticRegression": LogisticRegression(max_iter=1000),
+    "RandomForest": RandomForestClassifier(n_estimators=100, random_state=42),
+    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric="logloss", random_state=42)
+}
+
+results = []
+for name, model in models.items():
+    pipe = Pipeline([("preprocessor", preprocessor), ("classifier", model)])
+    pipe.fit(X_train, y_train)
+    y_pred = pipe.predict(X_test)
+    y_proba = pipe.predict_proba(X_test)[:, 1]
+    results.append({
+        "Model": name,
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred),
+        "Recall": recall_score(y_test, y_pred),
+        "F1 Score": f1_score(y_test, y_pred),
+        "ROC AUC": roc_auc_score(y_test, y_proba)
+    })
+
+# Prepare for DNN
+X_transformed = preprocessor.fit_transform(X)
+X_train_nn, X_test_nn, y_train_nn, y_test_nn = train_test_split(X_transformed, y, test_size
+
+# Deep NN
+dnn = Sequential([
+    Dense(64, activation="relu", input_shape=(X_train_nn.shape[1],)),
+    Dense(32, activation="relu"),
+    Dense(1, activation="sigmoid")
+])
+dnn.compile(optimizer=Adam(), loss="binary_crossentropy", metrics=["accuracy"])
+dnn.fit(X_train_nn, y_train_nn, epochs=20, verbose=0)
+
+y_pred_nn = (dnn.predict(X_test_nn) > 0.5).astype(int)
+y_proba_nn = dnn.predict(X_test_nn)
+
+results.append({
+    "Model": "DeepNN",
+    "Accuracy": accuracy_score(y_test_nn, y_pred_nn),
+    "Precision": precision_score(y_test_nn, y_pred_nn),
+    "Recall": recall_score(y_test_nn, y_pred_nn),
+    "F1 Score": f1_score(y_test_nn, y_pred_nn),
+    "ROC AUC": roc_auc_score(y_test_nn, y_proba_nn)
+})
+
+results_df = pd.DataFrame(results)
+print(results_df)
